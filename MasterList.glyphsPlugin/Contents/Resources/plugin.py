@@ -37,6 +37,7 @@ class MasterList(GeneralPlugin):
         self._groupButtonItems = None
         self._rowToMaster = []
         self._listDelegate = None
+        self._benchmarkID = None
 
     # --- Menu action -----------------------------------------------------
 
@@ -64,7 +65,9 @@ class MasterList(GeneralPlugin):
 
     @objc.python_method
     def _buildPanel(self):
-        self.w = vanilla.FloatingWindow((320, 360), "Masters", minSize=(280, 160))
+        from AppKit import NSMenu, NSMenuItem
+
+        self.w = vanilla.FloatingWindow((420, 360), "Masters List", minSize=(320, 160))
         panel = self.w.getNSWindow()
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setHidesOnDeactivate_(True)
@@ -113,7 +116,7 @@ class MasterList(GeneralPlugin):
                 title="Name",
                 key="name",
                 editable=False,
-                width=150,
+                width=100,
                 minWidth=80,
                 maxWidth=600,
             ),
@@ -121,7 +124,15 @@ class MasterList(GeneralPlugin):
                 title="Axes",
                 key="axes",
                 editable=False,
-                width=110,
+                width=100,
+                minWidth=40,
+                maxWidth=600,
+            ),
+            dict(
+                title="Diff",
+                key="diff",
+                editable=False,
+                width=100,
                 minWidth=40,
                 maxWidth=600,
             ),
@@ -131,6 +142,7 @@ class MasterList(GeneralPlugin):
             [],
             columnDescriptions=columnDescriptions,
             selectionCallback=self.listSelectionCallback,
+            doubleClickCallback=self.listDoubleClickCallback,
             allowsMultipleSelection=False,
             allowsEmptySelection=True,
             allowsSorting=False,
@@ -142,6 +154,14 @@ class MasterList(GeneralPlugin):
         tableView.setColumnAutoresizingStyle_(1)  # NSTableViewUniformColumnAutoresizingStyle
         for column in tableView.tableColumns():
             column.setResizingMask_(3 if column.identifier() == "name" else 2)  # user|auto vs user only
+
+        menu = NSMenu.alloc().initWithTitle_("")
+        menuItem = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Toggle Benchmark Master", self.toggleBenchmark_, ""
+        )
+        menuItem.setTarget_(self)
+        menu.addItem_(menuItem)
+        tableView.setMenu_(menu)
 
         self._listDelegate = _MasterListDelegate.alloc().initWithPlugin_(self)
         self.w.list.getNSTableView().setDelegate_(self._listDelegate)
@@ -282,48 +302,113 @@ class MasterList(GeneralPlugin):
             return None
 
     @objc.python_method
-    def _compatibilityFor(self, font, masterIndex):
-        """Returns one of: 'self', 'match', 'mismatch', 'missing', 'none'."""
-        glyph = self._activeGlyph()
-        if glyph is None:
-            return "none"
-        masters = self._masters()
-        if not (0 <= masterIndex < len(masters)):
-            return "none"
+    def _benchmarkIndex(self, font, masters):
+        """Benchmark master index, falling back to the active one.
+
+        Returns (index, isExplicit).
+        """
+        if self._benchmarkID is not None:
+            for i, master in enumerate(masters):
+                try:
+                    if master.id == self._benchmarkID:
+                        return i, True
+                except Exception:
+                    pass
         try:
-            activeIndex = int(font.masterIndex)
+            return int(font.masterIndex), False
         except Exception:
-            activeIndex = 0
-        try:
-            activeMasterID = masters[activeIndex].id
-            thisMasterID = masters[masterIndex].id
-        except Exception:
-            return "none"
-        try:
-            activeLayer = glyph.layers[activeMasterID]
-            thisLayer = glyph.layers[thisMasterID]
-        except Exception:
-            return "missing"
-        if activeLayer is None or thisLayer is None:
-            return "missing"
-        if masterIndex == activeIndex:
-            return "self"
-        activeCS = self._compareString(activeLayer)
-        thisCS = self._compareString(thisLayer)
-        if activeCS is None or thisCS is None:
-            return "missing"
-        return "match" if activeCS == thisCS else "mismatch"
+            return 0, False
 
     @objc.python_method
-    def _compatSymbol(self, font, masterIndex):
-        state = self._compatibilityFor(font, masterIndex)
-        if state == "self":
-            return "🔘"
-        if state == "match":
-            return "🟢"
-        if state == "mismatch":
-            return "🔴"
-        return "—"
+    def _layerSignature(self, layer):
+        """(nodeCounts, componentNames, anchorNames)."""
+        try:
+            paths = list(layer.paths)
+        except Exception:
+            paths = []
+        try:
+            components = [str(c.componentName) for c in layer.components]
+        except Exception:
+            components = []
+        try:
+            anchors = sorted(str(a.name) for a in layer.anchors)
+        except Exception:
+            anchors = []
+        nodeCounts = []
+        for path in paths:
+            try:
+                nodeCounts.append(len(list(path.nodes)))
+            except Exception:
+                nodeCounts.append(0)
+        return nodeCounts, components, anchors
+
+    @objc.python_method
+    def _diffFlags(self, benchmarkLayer, layer):
+        """What differs between two layers, as short labels."""
+        bench = self._layerSignature(benchmarkLayer)
+        this = self._layerSignature(layer)
+        flags = []
+        if bench[0] != this[0]:
+            flags.append("nodes")
+        if bench[1] != this[1]:
+            flags.append("components")
+        if bench[2] != this[2]:
+            flags.append("anchors")
+        return flags
+
+    @objc.python_method
+    def _compatFor(self, glyph, masters, benchmarkIndex, explicit, masterIndex):
+        """Returns (symbol, diffString) for one master row."""
+        if glyph is None:
+            return "—", ""
+        if not (0 <= masterIndex < len(masters)):
+            return "—", ""
+        if not (0 <= benchmarkIndex < len(masters)):
+            return "—", ""
+        if masterIndex == benchmarkIndex:
+            return ("⭐" if explicit else "🔘"), ""
+        try:
+            benchmarkLayer = glyph.layers[masters[benchmarkIndex].id]
+            layer = glyph.layers[masters[masterIndex].id]
+        except Exception:
+            return "—", ""
+        if benchmarkLayer is None or layer is None:
+            return "—", ""
+        flags = self._diffFlags(benchmarkLayer, layer)
+        benchmarkCS = self._compareString(benchmarkLayer)
+        thisCS = self._compareString(layer)
+        if benchmarkCS is None or thisCS is None:
+            compatible = not flags
+        else:
+            compatible = benchmarkCS == thisCS
+        return ("🟢" if compatible else "🔴"), ", ".join(flags)
+
+    @objc.python_method
+    def _toggleBenchmarkAtRow(self, row):
+        if not (0 <= row < len(self._rowToMaster)):
+            return
+        masterIndex = self._rowToMaster[row]
+        masters = self._masters()
+        if masterIndex is None or not (0 <= masterIndex < len(masters)):
+            return
+        try:
+            masterID = masters[masterIndex].id
+        except Exception:
+            return
+        self._benchmarkID = None if self._benchmarkID == masterID else masterID
+        self._reload()
+        self._syncSelectionFromFont()
+
+    def toggleBenchmark_(self, sender):
+        if self.w is None:
+            return
+        self._toggleBenchmarkAtRow(self.w.list.getNSTableView().clickedRow())
+
+    @objc.python_method
+    def listDoubleClickCallback(self, sender):
+        selection = sender.getSelection()
+        if selection:
+            self._toggleBenchmarkAtRow(selection[0])
 
     @objc.python_method
     def _axisNames(self):
@@ -363,21 +448,27 @@ class MasterList(GeneralPlugin):
         """Returns (items, rowToMaster). Header rows map to None."""
         font = self._currentFont()
         if font is None:
-            return [dict(name="No font open", axes="", compat="")], [None]
+            return [dict(name="No font open", axes="", compat="", diff="")], [None]
         masters = self._masters()
+        glyph = self._activeGlyph()
+        benchmarkIndex, explicit = self._benchmarkIndex(font, masters)
         entries = []
         for i, master in enumerate(masters):
             try:
                 name = master.name or ""
             except Exception:
                 name = ""
+            symbol, diff = self._compatFor(
+                glyph, masters, benchmarkIndex, explicit, i
+            )
             entries.append(
                 (
                     i,
                     dict(
                         name=name,
                         axes=self._axesString(font, master),
-                        compat=self._compatSymbol(font, i),
+                        compat=symbol,
+                        diff=diff,
                     ),
                 )
             )
@@ -398,7 +489,7 @@ class MasterList(GeneralPlugin):
                 self._groupAxisName,
                 "—" if display is None else display,
             )
-            items.append(dict(name=header, axes="", compat=""))
+            items.append(dict(name=header, axes="", compat="", diff=""))
             rowToMaster.append(None)
             for i, item in groups[value]:
                 items.append(item)

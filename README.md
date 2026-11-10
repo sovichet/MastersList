@@ -2,7 +2,8 @@
 
 A Glyphs 3 plugin that puts the font's masters in a floating panel, so you can
 see and switch between them without the master dropdown, and see at a glance
-which ones are interpolation-compatible with the layer you're drawing.
+which ones are interpolation-compatible with the layer you're drawing, and what
+breaks when they aren't.
 
 
 ## What it does
@@ -10,11 +11,16 @@ which ones are interpolation-compatible with the layer you're drawing.
 - Lists every master in the current font with its axis coordinates (`wght 400, wdth 100`).
 - Click a row to make that master the active one in the edit view.
 - Shows, per master, whether the current glyph's layer is interpolation-compatible
-  with the active layer:
-  - 🔘 the active master
-  - 🟢 compatible with the active layer
+  with the benchmark layer:
+  - ⭐ the benchmark master (🔘 when none is set, i.e. the active master is used)
+  - 🟢 compatible with the benchmark
   - 🔴 incompatible
   - — no layer, or no glyph open
+- Double-click a row (or right-click > *Toggle Benchmark Master*) to pin that
+  master as the benchmark everything else is compared against; double-click it
+  again to go back to comparing against the active master.
+- The **Diff** column says what breaks compatibility: `nodes` (path or node
+  counts), `components`, `anchors`.
 - **← / →** step to the previous/next master in list order. The 🪜 field sets
   the step size, so `4` on a 4-weight × 3-width family jumps across widths.
 - The popup groups the list by any axis, with a header row per axis value.
